@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<executable>
+  <category>Segmentation</category>
+  <title>DentalSegmentatorInference</title>
+  <description><![CDATA[C++ CLI module for nnU-Net dental segmentation using ONNX Runtime (TensorRT/CUDA).]]></description>
+  <version>1.0</version>
+  <documentation-url>https://github.com/gaudot/SlicerDentalSegmentator</documentation-url>
+  <license>Apache 2.0</license>
+  <contributor>SlicerDentalSegmentator contributors</contributor>
+  <acknowledgements><![CDATA[Based on the DentalSegmentator nnU-Net model.]]></acknowledgements>
+  <parameters>
+    <label>IO</label>
+    <description><![CDATA[Input/output parameters]]></description>
+    <image>
+      <name>inputVolume</name>
+      <label>Input Volume</label>
+      <channel>input</channel>
+      <index>0</index>
+      <description><![CDATA[Input CT/CBCT volume to segment.]]></description>
+    </image>
+    <image type="label">
+      <name>outputVolume</name>
+      <label>Output Labelmap</label>
+      <channel>output</channel>
+      <index>1</index>
+      <description><![CDATA[Output segmentation labelmap.]]></description>
+    </image>
+  </parameters>
+  <parameters>
+    <label>Model</label>
+    <description><![CDATA[Model configuration]]></description>
+    <directory>
+      <name>modelDir</name>
+      <label>Model Directory</label>
+      <longflag>modelDir</longflag>
+      <description><![CDATA[Directory containing the ONNX model file and plans.json.]]></description>
+    </directory>
+    <string-enumeration>
+      <name>device</name>
+      <label>Device</label>
+      <longflag>device</longflag>
+      <default>cuda</default>
+      <description><![CDATA[Inference device: cuda (GPU with TensorRT/CUDA EP) or cpu.]]></description>
+      <element>cuda</element>
+      <element>cpu</element>
+    </string-enumeration>
+  </parameters>
+</executable>
