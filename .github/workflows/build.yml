@@ -1,0 +1,27 @@
+name: Build Slicer Extension
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Slicer
+        shell: powershell
+        run: |
+          $slicerVersion = "5.6.2"
+          $url = "https://download.slicer.org/bitstream/657822fcdd81f027fcd0e831"
+          Invoke-WebRequest -Uri $url -OutFile slicer.exe
+          # TODO: 需要根据实际 Slicer 版本调整下载 URL
+
+      - name: Build Extension
+        shell: cmd
+        run: |
+          echo "TODO: Configure with Slicer_DIR and build"
+          echo "This workflow is a placeholder - see README for local build instructions"
