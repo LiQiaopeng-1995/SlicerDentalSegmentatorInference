@@ -87,39 +87,105 @@ PreprocessResult preprocess(const std::string& inputPath, const PlansConfig& con
   result.originalOrigin = floatImage->GetOrigin();
   result.originalDirection = floatImage->GetDirection();
 
-  // 2. Transpose forward
+  // 2. Transpose forward (manual implementation for robustness)
   std::cout << "Transposing axes..." << std::endl;
-  auto permute = PermuteType::New();
-  itk::FixedArray<unsigned int, 3> order;
-  for (int i = 0; i < 3; ++i)
-    order[i] = static_cast<unsigned int>(config.transposeForward[i]);
-  permute->SetOrder(order);
-  permute->SetInput(floatImage);
-  permute->Update();
-  auto transposed = permute->GetOutput();
-  transposed->DisconnectPipeline();
+  FloatImageType::Pointer transposed;
+  {
+    auto inputSize = floatImage->GetLargestPossibleRegion().GetSize();
+    auto inputSpacing = floatImage->GetSpacing();
 
-  // 3. Crop to non-zero bounding box
+    const auto& fwd = config.transposeForward;
+
+    FloatImageType::SizeType newSize;
+    FloatImageType::SpacingType newSpacing;
+    for (int d = 0; d < 3; ++d)
+    {
+      newSize[d] = inputSize[fwd[d]];
+      newSpacing[d] = inputSpacing[fwd[d]];
+    }
+
+    transposed = FloatImageType::New();
+    FloatImageType::RegionType newRegion;
+    newRegion.SetSize(newSize);
+    transposed->SetRegions(newRegion);
+    transposed->SetSpacing(newSpacing);
+    transposed->Allocate();
+
+    // Copy data with axes permutation
+    const float* src = floatImage->GetBufferPointer();
+    float* dst = transposed->GetBufferPointer();
+
+    // Input strides (ITK uses x-fastest order)
+    long sx = 1;
+    long sy = static_cast<long>(inputSize[0]);
+    long sz = static_cast<long>(inputSize[0]) * static_cast<long>(inputSize[1]);
+    long strides[3] = {sx, sy, sz};
+
+    // Output strides
+    long osx = 1;
+    long osy = static_cast<long>(newSize[0]);
+    long osz = static_cast<long>(newSize[0]) * static_cast<long>(newSize[1]);
+
+    for (long z = 0; z < static_cast<long>(newSize[2]); ++z)
+    {
+      for (long y = 0; y < static_cast<long>(newSize[1]); ++y)
+      {
+        for (long x = 0; x < static_cast<long>(newSize[0]); ++x)
+        {
+          // Output[x,y,z] = Input[coords], where coords are inverse-permuted
+          long srcCoords[3];
+          srcCoords[fwd[0]] = x;
+          srcCoords[fwd[1]] = y;
+          srcCoords[fwd[2]] = z;
+
+          long srcIdx = srcCoords[0] * strides[0] + srcCoords[1] * strides[1] + srcCoords[2] * strides[2];
+          long dstIdx = x * osx + y * osy + z * osz;
+          dst[dstIdx] = src[srcIdx];
+        }
+      }
+    }
+
+    std::cout << "  Transposed size: " << newSize << ", spacing: " << newSpacing << std::endl;
+  }
+
+  // 3. Crop to non-zero bounding box (manual implementation)
   std::cout << "Cropping to non-zero region..." << std::endl;
   FloatImageType::IndexType bboxStart;
   FloatImageType::SizeType bboxSize;
   computeNonzeroBBox(transposed, bboxStart, bboxSize);
   result.cropStart = bboxStart;
   result.croppedSize = bboxSize;
+  std::cout << "  BBox start: " << bboxStart << ", size: " << bboxSize << std::endl;
 
-  FloatImageType::RegionType cropRegion(bboxStart, bboxSize);
-  auto extract = ExtractType::New();
-  extract->SetExtractionRegion(cropRegion);
-  extract->SetInput(transposed);
-  extract->SetDirectionCollapseToSubmatrix();
-  extract->Update();
-  auto cropped = extract->GetOutput();
-  cropped->DisconnectPipeline();
+  FloatImageType::Pointer cropped;
+  {
+    auto tSize = transposed->GetLargestPossibleRegion().GetSize();
+    auto tSpacing = transposed->GetSpacing();
 
-  // Reset origin to 0 after cropping for simpler resampling
-  FloatImageType::PointType zeroOrigin;
-  zeroOrigin.Fill(0.0);
-  cropped->SetOrigin(zeroOrigin);
+    cropped = FloatImageType::New();
+    FloatImageType::RegionType cRegion;
+    cRegion.SetSize(bboxSize);
+    cropped->SetRegions(cRegion);
+    cropped->SetSpacing(tSpacing);
+    cropped->Allocate();
+
+    const float* tData = transposed->GetBufferPointer();
+    float* cData = cropped->GetBufferPointer();
+
+    long tSx = 1, tSy = static_cast<long>(tSize[0]),
+         tSz = static_cast<long>(tSize[0]) * static_cast<long>(tSize[1]);
+    long cSx = 1, cSy = static_cast<long>(bboxSize[0]),
+         cSz = static_cast<long>(bboxSize[0]) * static_cast<long>(bboxSize[1]);
+
+    for (long z = 0; z < static_cast<long>(bboxSize[2]); ++z)
+      for (long y = 0; y < static_cast<long>(bboxSize[1]); ++y)
+        for (long x = 0; x < static_cast<long>(bboxSize[0]); ++x)
+        {
+          long si = (x + bboxStart[0]) * tSx + (y + bboxStart[1]) * tSy + (z + bboxStart[2]) * tSz;
+          long di = x * cSx + y * cSy + z * cSz;
+          cData[di] = tData[si];
+        }
+  }
 
   // 4. CT Normalization: clip to [percentile_00_5, percentile_99_5], then z-score
   std::cout << "Normalizing..." << std::endl;

@@ -1,0 +1,19 @@
+# Build
+build/
+test/build/
+
+# Model weights (large files, download separately)
+model_weights/
+
+# Test data (patient data, not for distribution)
+test_data/
+20260421_165639/
+20260421_165639.rar
+
+# Misc
+*.jpg
+*.ply
+*.stl
+*.pyc
+__pycache__/
+.claude/
