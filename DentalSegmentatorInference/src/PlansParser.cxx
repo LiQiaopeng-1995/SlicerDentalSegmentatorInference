@@ -10,8 +10,12 @@ using json = nlohmann::json;
 
 static fs::path findPlansJson(const std::string& modelDir)
 {
-  // Search in modelDir, then parent, then grandparent
-  for (auto dir = fs::path(modelDir); dir.has_parent_path(); dir = dir.parent_path())
+  // Search in modelDir, then parent, then grandparent.
+  // Must run at least one iteration: single-segment relative paths (e.g. "models")
+  // have has_parent_path() == false on MSVC, and the old "for (; has_parent_path();)"
+  // loop would skip the modelDir check entirely and always throw.
+  fs::path dir = fs::path(modelDir);
+  for (int level = 0; level < 3; ++level)
   {
     auto candidate = dir / "plans.json";
     if (fs::exists(candidate))
@@ -20,9 +24,9 @@ static fs::path findPlansJson(const std::string& modelDir)
     candidate = dir / "nnUNetPlans.json";
     if (fs::exists(candidate))
       return candidate;
-    // Stop after checking 3 levels up
-    if (dir == fs::path(modelDir).parent_path().parent_path())
+    if (!dir.has_parent_path())
       break;
+    dir = dir.parent_path();
   }
   throw std::runtime_error("plans.json not found in or near: " + modelDir);
 }
@@ -38,13 +42,18 @@ PlansConfig parsePlans(const std::string& modelDir)
   json plans = json::parse(ifs);
   PlansConfig cfg{};
 
-  // Transpose axes
+  // Transpose axes — convert from numpy (Z,Y,X) convention to ITK (X,Y,Z) dims.
+  // numpy axis 0=Z→ITK 2, 1=Y→ITK 1, 2=X→ITK 0;  result[ITK_new] = ITK_old.
   auto transpFwd = plans.value("transpose_forward", json::array({0, 1, 2}));
   auto transpBwd = plans.value("transpose_backward", json::array({0, 1, 2}));
+  const int np2itk[3] = {2, 1, 0};  // numpy axis → ITK dimension
   for (int i = 0; i < 3; ++i)
   {
-    cfg.transposeForward[i] = transpFwd[i].get<int>();
-    cfg.transposeBackward[i] = transpBwd[i].get<int>();
+    int npNew = i;
+    int npOldFwd = transpFwd[i].get<int>();
+    int npOldBwd = transpBwd[i].get<int>();
+    cfg.transposeForward[np2itk[npNew]] = np2itk[npOldFwd];
+    cfg.transposeBackward[np2itk[npNew]] = np2itk[npOldBwd];
   }
 
   // Get 3d_fullres configuration

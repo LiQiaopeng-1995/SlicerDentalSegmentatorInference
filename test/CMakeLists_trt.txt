@@ -1,0 +1,88 @@
+cmake_minimum_required(VERSION 3.16)
+project(DentalSegmentatorTRTTest CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+
+# ============================================================================
+# TensorRT 8.6
+# ============================================================================
+set(TENSORRT_ROOT "C:/NVIDIA/TensorRT-8.6.1.6")
+set(TENSORRT_INCLUDE_DIRS "${TENSORRT_ROOT}/include")
+set(TENSORRT_LIB_DIR "${TENSORRT_ROOT}/lib")
+
+# nvinfer
+find_library(TENSORRT_NVINFER_LIB
+  NAMES nvinfer
+  PATHS "${TENSORRT_LIB_DIR}"
+  NO_DEFAULT_PATH
+)
+# nvonnxparser
+find_library(TENSORRT_NVONNXPARSER_LIB
+  NAMES nvonnxparser
+  PATHS "${TENSORRT_LIB_DIR}"
+  NO_DEFAULT_PATH
+)
+# nvinfer_plugin (may be needed for some ops)
+find_library(TENSORRT_NVINFER_PLUGIN_LIB
+  NAMES nvinfer_plugin
+  PATHS "${TENSORRT_LIB_DIR}"
+  NO_DEFAULT_PATH
+)
+
+if(NOT TENSORRT_NVINFER_LIB OR NOT TENSORRT_NVONNXPARSER_LIB)
+  message(FATAL_ERROR "TensorRT libraries not found in ${TENSORRT_LIB_DIR}")
+endif()
+
+message(STATUS "TensorRT include: ${TENSORRT_INCLUDE_DIRS}")
+message(STATUS "  nvinfer:        ${TENSORRT_NVINFER_LIB}")
+message(STATUS "  nvonnxparser:   ${TENSORRT_NVONNXPARSER_LIB}")
+message(STATUS "  nvinfer_plugin: ${TENSORRT_NVINFER_PLUGIN_LIB}")
+
+# ============================================================================
+# CUDA 11.1
+# ============================================================================
+set(CUDA_TOOLKIT_ROOT_DIR "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.1")
+find_package(CUDA REQUIRED)
+message(STATUS "CUDA: ${CUDA_VERSION_STRING}")
+message(STATUS "CUDA include: ${CUDA_INCLUDE_DIRS}")
+message(STATUS "CUDA lib:     ${CUDA_LIBRARIES}")
+
+# ============================================================================
+# Executable
+# ============================================================================
+add_executable(trt_test
+  test_trt.cxx
+)
+
+target_include_directories(trt_test PRIVATE
+  ${TENSORRT_INCLUDE_DIRS}
+  ${CUDA_INCLUDE_DIRS}
+)
+
+target_link_libraries(trt_test PRIVATE
+  ${TENSORRT_NVINFER_LIB}
+  ${TENSORRT_NVONNXPARSER_LIB}
+  ${CUDA_LIBRARIES}
+)
+
+# Optionally link plugin if found
+if(TENSORRT_NVINFER_PLUGIN_LIB)
+  target_link_libraries(trt_test PRIVATE ${TENSORRT_NVINFER_PLUGIN_LIB})
+endif()
+
+# Copy TensorRT DLLs to output directory on Windows
+add_custom_command(TARGET trt_test POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${TENSORRT_LIB_DIR}/nvinfer.dll"
+    "${TENSORRT_LIB_DIR}/nvinfer_builder_resource.dll"
+    "${TENSORRT_LIB_DIR}/nvinfer_dispatch.dll"
+    "${TENSORRT_LIB_DIR}/nvinfer_lean.dll"
+    "${TENSORRT_LIB_DIR}/nvinfer_plugin.dll"
+    "${TENSORRT_LIB_DIR}/nvinfer_vc_plugin.dll"
+    "${TENSORRT_LIB_DIR}/nvonnxparser.dll"
+    "${TENSORRT_LIB_DIR}/nvparsers.dll"
+    "$<TARGET_FILE_DIR:trt_test>"
+)
+
+message(STATUS "Target: trt_test")
+message(STATUS "Build:  cmake --build . --config Release")

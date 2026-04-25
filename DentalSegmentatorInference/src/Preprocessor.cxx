@@ -4,8 +4,6 @@
 #include <itkCastImageFilter.h>
 #include <itkPermuteAxesImageFilter.h>
 #include <itkExtractImageFilter.h>
-#include <itkResampleImageFilter.h>
-#include <itkBSplineInterpolateImageFunction.h>
 #include <itkConstantPadImageFilter.h>
 #include <itkImageRegionIterator.h>
 #include <itkImageRegionConstIterator.h>
@@ -20,8 +18,6 @@ using ShortImageType = itk::Image<short, 3>;
 using CastFilterType = itk::CastImageFilter<ShortImageType, FloatImageType>;
 using PermuteType = itk::PermuteAxesImageFilter<FloatImageType>;
 using ExtractType = itk::ExtractImageFilter<FloatImageType, FloatImageType>;
-using ResampleType = itk::ResampleImageFilter<FloatImageType, FloatImageType>;
-using BSplineInterpType = itk::BSplineInterpolateImageFunction<FloatImageType, double, float>;
 using PadType = itk::ConstantPadImageFilter<FloatImageType, FloatImageType>;
 
 // ──────────────────────── helpers ────────────────────────
@@ -45,7 +41,7 @@ static void computeNonzeroBBox(FloatImageType::Pointer image,
   itk::ImageRegionConstIterator<FloatImageType> it(image, region);
   for (it.GoToBegin(); !it.IsAtEnd(); ++it)
   {
-    if (std::abs(it.Get()) > 1e-8f)
+    if (it.Get() > -500.0f)
     {
       auto idx = it.GetIndex();
       for (int d = 0; d < 3; ++d)
@@ -209,7 +205,10 @@ PreprocessResult preprocess(const std::string& inputPath, const PlansConfig& con
   // Store size before resampling (needed for logit resampling in postprocessing)
   result.sizeBeforeResampling = cropped->GetLargestPossibleRegion().GetSize();
 
-  // 5. Resample to target spacing (BSpline order 3)
+  // 5. Resample to target spacing with the same array-coordinate rule as
+  // PyTorch interpolate(..., align_corners=False). ITK's physical-coordinate
+  // resampler is close but not identical, and this preprocessing path is used
+  // to compare against a PyTorch reference.
   std::cout << "Resampling to target spacing..." << std::endl;
   {
     auto croppedSpacing = cropped->GetSpacing();
@@ -225,20 +224,73 @@ PreprocessResult preprocess(const std::string& inputPath, const PlansConfig& con
       if (targetSize[d] < 1) targetSize[d] = 1;
     }
 
-    auto interpolator = BSplineInterpType::New();
-    interpolator->SetSplineOrder(3);
+    const int inW = static_cast<int>(croppedSize[0]);
+    const int inH = static_cast<int>(croppedSize[1]);
+    const int inD = static_cast<int>(croppedSize[2]);
+    const int outW = static_cast<int>(targetSize[0]);
+    const int outH = static_cast<int>(targetSize[1]);
+    const int outD = static_cast<int>(targetSize[2]);
+    const float* src = cropped->GetBufferPointer();
 
-    auto resample = ResampleType::New();
-    resample->SetInput(cropped);
-    resample->SetInterpolator(interpolator);
-    resample->SetOutputSpacing(targetSpacing);
-    resample->SetSize(targetSize);
-    resample->SetOutputOrigin(cropped->GetOrigin());
-    resample->SetOutputDirection(cropped->GetDirection());
-    resample->SetDefaultPixelValue(0.0f);
-    resample->Update();
+    auto at = [&](int z, int y, int x) {
+      return src[static_cast<size_t>(z) * inH * inW + static_cast<size_t>(y) * inW + x];
+    };
+    auto clampCoord = [](double v, int n) {
+      if (n <= 1) return 0.0;
+      return std::clamp(v, 0.0, static_cast<double>(n - 1));
+    };
+    auto sample = [&](double z, double y, double x) {
+      z = clampCoord(z, inD);
+      y = clampCoord(y, inH);
+      x = clampCoord(x, inW);
+      const int z0 = static_cast<int>(std::floor(z));
+      const int y0 = static_cast<int>(std::floor(y));
+      const int x0 = static_cast<int>(std::floor(x));
+      const int z1 = std::min(z0 + 1, inD - 1);
+      const int y1 = std::min(y0 + 1, inH - 1);
+      const int x1 = std::min(x0 + 1, inW - 1);
+      const float tz = static_cast<float>(z - z0);
+      const float ty = static_cast<float>(y - y0);
+      const float tx = static_cast<float>(x - x0);
 
-    cropped = resample->GetOutput();
+      const float c00 = at(z0, y0, x0) * (1.0f - tx) + at(z0, y0, x1) * tx;
+      const float c10 = at(z0, y1, x0) * (1.0f - tx) + at(z0, y1, x1) * tx;
+      const float c01 = at(z1, y0, x0) * (1.0f - tx) + at(z1, y0, x1) * tx;
+      const float c11 = at(z1, y1, x0) * (1.0f - tx) + at(z1, y1, x1) * tx;
+      const float c0 = c00 * (1.0f - ty) + c10 * ty;
+      const float c1 = c01 * (1.0f - ty) + c11 * ty;
+      return c0 * (1.0f - tz) + c1 * tz;
+    };
+
+    auto resampled = FloatImageType::New();
+    FloatImageType::RegionType outRegion;
+    outRegion.SetSize(targetSize);
+    resampled->SetRegions(outRegion);
+    resampled->SetSpacing(targetSpacing);
+    resampled->SetOrigin(cropped->GetOrigin());
+    resampled->SetDirection(cropped->GetDirection());
+    resampled->Allocate();
+    float* dst = resampled->GetBufferPointer();
+
+    for (int z = 0; z < outD; ++z)
+    {
+      const double srcZ = (static_cast<double>(z) + 0.5) * static_cast<double>(inD)
+                          / static_cast<double>(outD) - 0.5;
+      for (int y = 0; y < outH; ++y)
+      {
+        const double srcY = (static_cast<double>(y) + 0.5) * static_cast<double>(inH)
+                            / static_cast<double>(outH) - 0.5;
+        for (int x = 0; x < outW; ++x)
+        {
+          const double srcX = (static_cast<double>(x) + 0.5) * static_cast<double>(inW)
+                              / static_cast<double>(outW) - 0.5;
+          dst[static_cast<size_t>(z) * outH * outW + static_cast<size_t>(y) * outW + x] =
+            sample(srcZ, srcY, srcX);
+        }
+      }
+    }
+
+    cropped = resampled;
     cropped->DisconnectPipeline();
   }
 

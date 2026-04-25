@@ -1,19 +1,64 @@
 #include "Postprocessor.h"
 
 #include <itkImageFileWriter.h>
-#include <itkResampleImageFilter.h>
-#include <itkLinearInterpolateImageFunction.h>
 #include <itkPermuteAxesImageFilter.h>
-#include <itkImageRegionIterator.h>
 
 #include <algorithm>
 #include <cmath>
 #include <iostream>
 
 using LabelPermuteType = itk::PermuteAxesImageFilter<LabelImageType>;
-using LinearInterpType = itk::LinearInterpolateImageFunction<FloatImageType, double>;
-using FloatResampleType = itk::ResampleImageFilter<FloatImageType, FloatImageType>;
 using WriterType = itk::ImageFileWriter<LabelImageType>;
+
+static float sampleLogitLinearBorder(const std::vector<float>& logits,
+                                     size_t classOffset,
+                                     int fullD,
+                                     int fullH,
+                                     int fullW,
+                                     const std::array<int, 3>& padBefore,
+                                     int unpaddedD,
+                                     int unpaddedH,
+                                     int unpaddedW,
+                                     double d,
+                                     double h,
+                                     double w)
+{
+  auto clampCoord = [](double v, int n) {
+    if (n <= 1) return 0.0;
+    return std::clamp(v, 0.0, static_cast<double>(n - 1));
+  };
+
+  d = clampCoord(d, unpaddedD);
+  h = clampCoord(h, unpaddedH);
+  w = clampCoord(w, unpaddedW);
+
+  const int d0 = static_cast<int>(std::floor(d));
+  const int h0 = static_cast<int>(std::floor(h));
+  const int w0 = static_cast<int>(std::floor(w));
+  const int d1 = std::min(d0 + 1, unpaddedD - 1);
+  const int h1 = std::min(h0 + 1, unpaddedH - 1);
+  const int w1 = std::min(w0 + 1, unpaddedW - 1);
+
+  const float td = static_cast<float>(d - d0);
+  const float th = static_cast<float>(h - h0);
+  const float tw = static_cast<float>(w - w0);
+
+  auto at = [&](int ld, int lh, int lw) {
+    const int gd = ld + padBefore[0];
+    const int gh = lh + padBefore[1];
+    const int gw = lw + padBefore[2];
+    return logits[classOffset + static_cast<size_t>(gd) * fullH * fullW
+                  + static_cast<size_t>(gh) * fullW + gw];
+  };
+
+  const float c00 = at(d0, h0, w0) * (1.0f - tw) + at(d0, h0, w1) * tw;
+  const float c10 = at(d0, h1, w0) * (1.0f - tw) + at(d0, h1, w1) * tw;
+  const float c01 = at(d1, h0, w0) * (1.0f - tw) + at(d1, h0, w1) * tw;
+  const float c11 = at(d1, h1, w0) * (1.0f - tw) + at(d1, h1, w1) * tw;
+  const float c0 = c00 * (1.0f - th) + c10 * th;
+  const float c1 = c01 * (1.0f - th) + c11 * th;
+  return c0 * (1.0f - td) + c1 * td;
+}
 
 void postprocess(const std::vector<float>& logits,
                  const std::array<int, 3>& logitsShape,
@@ -32,12 +77,11 @@ void postprocess(const std::vector<float>& logits,
 
   std::cout << "Postprocessing: unpadding to [" << unpaddedD << ", " << unpaddedH << ", " << unpaddedW << "]" << std::endl;
 
-  // 2. For each class, create ITK image of logits (unpadded), then resample to pre-resampling size
+  // 2. Resample class logits back to pre-resampling size with PyTorch
+  // interpolate(align_corners=False), then argmax.
   auto targetSize = prepResult.sizeBeforeResampling;
   std::cout << "Resampling logits to pre-resampling size: " << targetSize << std::endl;
 
-  // We'll do argmax after resampling individual class logit maps
-  // Create label image at the resampled-back resolution
   auto labelImage = LabelImageType::New();
   {
     LabelImageType::RegionType labelRegion;
@@ -49,81 +93,40 @@ void postprocess(const std::vector<float>& logits,
     labelImage->Allocate(true);  // zero-initialized
   }
 
-  // Process one class at a time to save memory
-  // For each voxel, track the max logit and corresponding class
-  size_t targetVoxels = static_cast<size_t>(targetSize[0]) * targetSize[1] * targetSize[2];
-  std::vector<float> maxLogit(targetVoxels, -std::numeric_limits<float>::infinity());
-
-  for (int c = 0; c < numClasses; ++c)
+  const int targetD = static_cast<int>(targetSize[2]);
+  const int targetH = static_cast<int>(targetSize[1]);
+  const int targetW = static_cast<int>(targetSize[0]);
+  for (int z = 0; z < targetD; ++z)
   {
-    // Create float image from unpadded logits for this class
-    auto classImage = FloatImageType::New();
-    FloatImageType::RegionType classRegion;
-    FloatImageType::IndexType classStart;
-    classStart.Fill(0);
-    FloatImageType::SizeType classSize;
-    classSize[0] = unpaddedD; classSize[1] = unpaddedH; classSize[2] = unpaddedW;
-    classRegion.SetIndex(classStart);
-    classRegion.SetSize(classSize);
-    classImage->SetRegions(classRegion);
-
-    // Set spacing to the target spacing used during preprocessing resampling
-    FloatImageType::SpacingType classSpacing;
-    for (int d = 0; d < 3; ++d)
-      classSpacing[d] = config.targetSpacing[d];
-    classImage->SetSpacing(classSpacing);
-    classImage->Allocate();
-
-    // Copy unpadded logits
-    size_t classOffset = static_cast<size_t>(c) * spatialSize;
-    itk::ImageRegionIterator<FloatImageType> it(classImage, classRegion);
-    for (it.GoToBegin(); !it.IsAtEnd(); ++it)
+    const double srcD = (static_cast<double>(z) + 0.5) * static_cast<double>(unpaddedD)
+                        / static_cast<double>(targetD) - 0.5;
+    for (int y = 0; y < targetH; ++y)
     {
-      auto idx = it.GetIndex();
-      int z = idx[0] + prepResult.padBefore[0];
-      int y = idx[1] + prepResult.padBefore[1];
-      int x = idx[2] + prepResult.padBefore[2];
-      size_t srcIdx = classOffset + static_cast<size_t>(z) * H * W + y * W + x;
-      it.Set(logits[srcIdx]);
-    }
-
-    // Resample this class logits to pre-resampling size
-    FloatImageType::SpacingType origSpacing;
-    // Compute what spacing the pre-resampling image had
-    // It was the spacing after transpose + crop (before resample to target)
-    // We stored sizeBeforeResampling, and the classImage has target spacing
-    // Original spacing = target_spacing * unpadded_size / sizeBeforeResampling
-    for (int d = 0; d < 3; ++d)
-    {
-      if (targetSize[d] > 0)
-        origSpacing[d] = config.targetSpacing[d] * static_cast<double>(unpaddedD > 0 ? classSize[d] : 1) / targetSize[d];
-      else
-        origSpacing[d] = config.targetSpacing[d];
-    }
-
-    auto interpolator = LinearInterpType::New();
-    auto resample = FloatResampleType::New();
-    resample->SetInput(classImage);
-    resample->SetInterpolator(interpolator);
-    resample->SetSize(targetSize);
-    resample->SetOutputSpacing(origSpacing);
-    resample->SetOutputOrigin(classImage->GetOrigin());
-    resample->SetOutputDirection(classImage->GetDirection());
-    resample->SetDefaultPixelValue(0.0f);
-    resample->Update();
-    auto resampledClass = resample->GetOutput();
-
-    // Update argmax
-    itk::ImageRegionConstIterator<FloatImageType> rit(resampledClass, resampledClass->GetLargestPossibleRegion());
-    itk::ImageRegionIterator<LabelImageType> lit(labelImage, labelImage->GetLargestPossibleRegion());
-    size_t vi = 0;
-    for (rit.GoToBegin(), lit.GoToBegin(); !rit.IsAtEnd(); ++rit, ++lit, ++vi)
-    {
-      float val = rit.Get();
-      if (val > maxLogit[vi])
+      const double srcH = (static_cast<double>(y) + 0.5) * static_cast<double>(unpaddedH)
+                          / static_cast<double>(targetH) - 0.5;
+      for (int x = 0; x < targetW; ++x)
       {
-        maxLogit[vi] = val;
-        lit.Set(static_cast<unsigned char>(c));
+        const double srcW = (static_cast<double>(x) + 0.5) * static_cast<double>(unpaddedW)
+                            / static_cast<double>(targetW) - 0.5;
+        float best = -std::numeric_limits<float>::infinity();
+        unsigned char bestClass = 0;
+        for (int c = 0; c < numClasses; ++c)
+        {
+          const size_t classOffset = static_cast<size_t>(c) * spatialSize;
+          const float val = sampleLogitLinearBorder(logits, classOffset, D, H, W, prepResult.padBefore,
+                                                    unpaddedD, unpaddedH, unpaddedW, srcD, srcH, srcW);
+          if (val > best)
+          {
+            best = val;
+            bestClass = static_cast<unsigned char>(c);
+          }
+        }
+
+        LabelImageType::IndexType idx;
+        idx[0] = x;
+        idx[1] = y;
+        idx[2] = z;
+        labelImage->SetPixel(idx, bestClass);
       }
     }
   }

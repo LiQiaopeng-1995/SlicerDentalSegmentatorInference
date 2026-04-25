@@ -3,10 +3,18 @@
 Export segmentation to a single colored PLY mesh.
 Each anatomical structure gets a distinct color.
 """
+import os
+import sys
+from pathlib import Path
+
 import numpy as np
 import SimpleITK as sitk
 from skimage import measure
-import os, sys
+
+_root = str(Path(__file__).resolve().parent)
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+from sitk_path_io import read_sitk_image_safe
 
 LABELS = {
     1: ("Maxilla",          (220, 60,  60)),   # red
@@ -49,7 +57,7 @@ def write_ply_binary(filename, vertices, faces, colors):
 def export_colored_ply(seg_path, output_path, decimate_ratio=0.3):
     """Export all labels from segmentation as a single colored PLY."""
     print(f"Loading: {seg_path}")
-    img = sitk.ReadImage(seg_path)
+    img = read_sitk_image_safe(seg_path)
     arr = sitk.GetArrayFromImage(img)  # z,y,x
     spacing = np.array(img.GetSpacing())[::-1]  # xyz -> zyx
     origin = np.array(img.GetOrigin())[::-1]

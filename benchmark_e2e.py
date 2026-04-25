@@ -4,9 +4,16 @@ End-to-end benchmark: preprocessing + sliding window inference + postprocessing.
 Uses a synthetic volume that mimics real CBCT geometry.
 """
 import argparse, time, json, os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import SimpleITK as sitk
+
+_e2e_root = str(Path(__file__).resolve().parent)
+if _e2e_root not in sys.path:
+    sys.path.insert(0, _e2e_root)
+from sitk_path_io import read_sitk_image_safe
 
 
 def create_synthetic_cbct(output_path, size=(400, 400, 400), spacing=(0.4, 0.4, 0.4)):
@@ -38,7 +45,7 @@ def nnunet_preprocess(image_path, plans):
     patch_size = cfg["patch_size"]
 
     # 1. Read
-    img = sitk.ReadImage(image_path)
+    img = read_sitk_image_safe(image_path)
     arr = sitk.GetArrayFromImage(img).astype(np.float32)
     original_spacing = np.array(img.GetSpacing())[::-1]  # sitk xyz -> numpy zyx
     print(f"  Read: shape={arr.shape}, spacing={original_spacing}")

@@ -6,9 +6,16 @@ Benchmark with original nnU-Net default settings:
 - FP32
 """
 import time, json, os
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import SimpleITK as sitk
+
+_bc_root = str(Path(__file__).resolve().parent)
+if _bc_root not in sys.path:
+    sys.path.insert(0, _bc_root)
+from sitk_path_io import read_sitk_image_safe
 
 
 def make_gaussian(patch_size, sigma_scale=1.0/8):
@@ -30,7 +37,7 @@ def nnunet_preprocess(image_path, plans):
     target_spacing = np.array(cfg["spacing"])
     patch_size = cfg["patch_size"]
 
-    img = sitk.ReadImage(image_path)
+    img = read_sitk_image_safe(image_path)
     arr = sitk.GetArrayFromImage(img).astype(np.float32)
     original_spacing = np.array(img.GetSpacing())[::-1]
 
