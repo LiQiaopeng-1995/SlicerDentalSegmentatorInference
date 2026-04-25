@@ -1,31 +1,31 @@
 # SlicerDentalSegmentatorInference
 
-C++ ONNX Runtime inference backend for [SlicerDentalSegmentator](https://github.com/gaudot/SlicerDentalSegmentator).
+用于 [SlicerDentalSegmentator](https://github.com/gaudot/SlicerDentalSegmentator) 的 C++ ONNX Runtime 推理后端。
 
-Replaces the Python nnU-Net subprocess inference (~60-120s) with GPU-accelerated C++ inference (~7-9s on RTX 4060) using ONNX Runtime with TensorRT/CUDA execution providers.
+用 ONNX Runtime 配合 TensorRT/CUDA 执行提供方做 GPU 加速的 C++ 推理，替代原先基于 Python nnU-Net 子进程推理（约 60–120 秒）；在 RTX 4060 上约 7–9 秒。
 
-## Build Instructions
+## 构建说明
 
-### Prerequisites
+### 前置要求
 
-- **3D Slicer source build** (required to compile C++ extensions)
-- Visual Studio 2022 (Windows) or GCC ≥ 9 (Linux)
+- **3D Slicer 源码构建**（编译 C++ 扩展所必需）
+- Visual Studio 2022（Windows）或 GCC ≥ 9（Linux）
 - CMake ≥ 3.16
-- NVIDIA GPU + CUDA Toolkit (for GPU inference)
+- NVIDIA GPU + CUDA 工具包（用于 GPU 推理）
 
-### Step 1: Build 3D Slicer from source
+### 步骤 1：从源码构建 3D Slicer
 
-If you only have the Slicer installer, you need to build Slicer from source first. See: https://slicer.readthedocs.io/en/latest/developer_guide/build_instructions/index.html
+如果只有 Slicer 安装包，需要先从源码构建 Slicer。参见：https://slicer.readthedocs.io/en/latest/developer_guide/build_instructions/index.html
 
 ```bash
-# Brief summary (Windows):
+# 简要说明（Windows）：
 git clone https://github.com/Slicer/Slicer.git
 mkdir Slicer-build && cd Slicer-build
 cmake -G "Visual Studio 17 2022" -A x64 ../Slicer
-cmake --build . --config Release  # This takes 1-2 hours
+cmake --build . --config Release  # 约需 1–2 小时
 ```
 
-### Step 2: Build this extension
+### 步骤 2：构建本扩展
 
 ```bash
 git clone https://github.com/LiQiaopeng-1995/SlicerDentalSegmentatorInference.git
@@ -38,19 +38,19 @@ cmake -G "Visual Studio 17 2022" -A x64 \
 cmake --build . --config Release
 ```
 
-The SuperBuild will automatically download ONNX Runtime GPU.
+SuperBuild 会自动下载带 GPU 的 ONNX Runtime。
 
-### Step 3: Load in Slicer
+### 步骤 3：在 Slicer 中加载
 
-1. Open 3D Slicer (the one you built from source)
-2. Edit → Application Settings → Modules
-3. Add the build output directory to "Additional module paths":
-   - `SlicerDentalSegmentatorInference-build/DentalSegmentatorInference_inner-build/DentalSegmentatorInference/Release/` (Windows)
-4. Restart Slicer
+1. 打开 3D Slicer（须为你从源码构建的版本）
+2. 编辑 → 应用程序设置 → 模块
+3. 在「附加模块路径」中加入构建输出目录，例如：
+   - `SlicerDentalSegmentatorInference-build/DentalSegmentatorInference_inner-build/DentalSegmentatorInference/Release/`（Windows）
+4. 重启 Slicer
 
-### Step 4: Prepare the ONNX model
+### 步骤 4：准备 ONNX 模型
 
-Use `export_onnx.py` to convert the nnU-Net checkpoint:
+使用 `export_onnx.py` 将 nnU-Net 检查点导出为 ONNX：
 
 ```bash
 python export_onnx.py \
@@ -58,26 +58,26 @@ python export_onnx.py \
   --output /path/to/DentalSegmentator/Resources/ML/dental_segmentator.onnx
 ```
 
-Place the `.onnx` file in the model directory alongside `plans.json`.
+将 `.onnx` 放在模型目录中，与 `plans.json` 放在同一处。
 
-## Architecture
+## 架构
 
 ```
 Slicer (GUI)
-  → DentalSegmentator (Python UI extension, existing)
-    → DentalSegmentatorInference (this C++ CLI module)
-      → ITK: read volume
-      → Preprocess: transpose → crop → normalize → resample → pad
-      → ONNX Runtime (TensorRT FP16): sliding window inference
-      → Postprocess: resample logits → argmax → uncrop → transpose
-      → ITK: write segmentation labelmap
+  → DentalSegmentator（Python UI 扩展，已有）
+    → DentalSegmentatorInference（本 C++ CLI 模块）
+      → ITK：读入体数据
+      → 预处理：转置 → 裁剪 → 归一化 → 重采样 → 填充
+      → ONNX Runtime（TensorRT FP16）：滑窗推理
+      → 后处理：对 logits 重采样 → argmax → 去填充 → 转置
+      → ITK：写出分割标签图
 ```
 
-## Performance (RTX 4060)
+## 性能（RTX 4060）
 
-| Stage | Time |
+| 阶段 | 时间 |
 |---|---|
-| Preprocessing (ITK) | ~1-2s |
-| Sliding window inference (TRT FP16) | ~4-5s |
-| Postprocessing | ~1-2s |
-| **Total** | **~7-9s** |
+| 预处理（ITK） | 约 1–2s |
+| 滑窗推理（TRT FP16） | 约 4–5s |
+| 后处理 | 约 1–2s |
+| **合计** | **约 7–9s** |
